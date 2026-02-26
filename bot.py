@@ -5,12 +5,10 @@ import yt_dlp
 from telethon import TelegramClient, events
 from telethon.tl.types import InputMessagesFilterVideo
 
-# =============================================
-# Все данные берутся из переменных окружения Railway
-API_ID   = int(os.environ.get("API_ID", "0"))
-API_HASH = os.environ.get("API_HASH", "")
-PHONE    = os.environ.get("PHONE", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+API_ID   = "39723229"  # твой api_id
+API_HASH = "3e2b8ae519ce46f1e13f286050a56bca"
+PHONE    = "+380632362615"  # твой номер
+BOT_TOKEN = "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE"
 
 ALLOWED_SOURCES = [
     "youtube.com",
