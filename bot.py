@@ -3,7 +3,7 @@ import asyncio
 import glob
 import yt_dlp
 from telethon import TelegramClient, events
-
+from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 # =============================================
 API_ID    = 39723229          # число с my.telegram.org
 API_HASH  = "3e2b8ae519ce46f1e13f286050a56bca"         # хеш с my.telegram.org
@@ -59,12 +59,18 @@ def get_ydl_opts():
 async def main():
     cleanup_all()
 
+    # Userbot — Premium аккаунт, загружает файлы до 2GB
     userbot = TelegramClient("userbot_session", API_ID, API_HASH)
     await userbot.start(phone=PHONE)
     print("✅ Userbot запущен")
 
+    # Bot — принимает команды от пользователей
     bot = await TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
     print("✅ Бот запущен")
+
+    # Получаем entity бота через userbot — чтобы userbot мог слать ему файлы
+    bot_entity = await userbot.get_entity(BOT_USERNAME)
+    print(f"✅ Bot entity получен: {bot_entity.id}")
 
     @bot.on(events.NewMessage(pattern="/start"))
     async def start_handler(event):
@@ -87,8 +93,7 @@ async def main():
             return
 
         user_id = event.sender_id
-        # Сохраняем user_id для userbot — он использует его напрямую
-        chat_id = event.sender_id
+        chat_id = event.chat_id
 
         msg = await event.respond("🔍 Получаю информацию...")
 
@@ -135,7 +140,6 @@ async def main():
                 dur_str = f"\n⏱ {hours}:{mins:02d}:{secs:02d}" if hours else f"\n⏱ {mins}:{secs:02d}"
 
             quality_lines = "\n".join([f"  /q{q}_{user_id}" for q in available])
-
             text = (
                 f"🎬 {title[:120]}\n"
                 f"{'👤 ' + uploader if uploader else ''}{dur_str}\n\n"
@@ -213,23 +217,30 @@ async def main():
 
             file_size_mb = os.path.getsize(filename) / (1024 * 1024)
             await msg.edit(f"📤 Отправляю {quality}p ({file_size_mb:.1f} MB)...")
-            print(f"📤 Отправляю файл {filename} ({file_size_mb:.1f} MB) в chat_id={chat_id}")
+            print(f"📤 Загружаю файл через userbot -> пересылаю в chat_id={chat_id}")
 
-            # Отправляем через userbot (Premium — до 2GB)
-            await userbot.send_file(
-                chat_id,
+            # Шаг 1: userbot загружает файл и отправляет себе в Saved Messages
+            sent = await userbot.send_file(
+                "me",
                 filename,
                 caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {file_size_mb:.1f} MB",
                 supports_streaming=True,
             )
-            print(f"✅ Файл отправлен!")
+            print(f"✅ Файл загружен в Saved Messages, пересылаю в чат...")
+
+            # Шаг 2: пересылаем из Saved Messages в нужный чат через bot
+            await bot.forward_messages(chat_id, sent.id, "me")
+            print(f"✅ Переслано в chat_id={chat_id}!")
+
+            # Удаляем из Saved Messages
+            await userbot.delete_messages("me", sent.id)
 
             await msg.delete()
             if user_id in pending:
                 del pending[user_id]
 
         except Exception as e:
-            print(f"❌ Ошибка отправки: {e}")
+            print(f"❌ Ошибка: {e}")
             await msg.edit(f"❌ Ошибка:\n{str(e)[:300]}")
         finally:
             cleanup_file(filename)
@@ -240,6 +251,9 @@ async def main():
         userbot.run_until_disconnected(),
     )
 
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())
