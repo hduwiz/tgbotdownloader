@@ -1,30 +1,33 @@
 import os
 import asyncio
 import glob
+import subprocess
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # =============================================
-# Токен берётся из переменной окружения Railway
-# В Railway: Variables -> BOT_TOKEN = твой токен
 BOT_TOKEN = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
 
 ALLOWED_SOURCES = [
     "youtube.com",
     "youtu.be",
+    "vimeo.com",
+    "twitter.com",
+    "x.com",
     "instagram.com",
     "tiktok.com",
-    "rt.pornhub.com",
+    "pornhub.com",
     "xvideos.com",
     "xhamster.com",
     "xnxx.com",
-    "ru.pinterest.com",
 ]
 # =============================================
 
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+MAX_SIZE = 49 * 1024 * 1024  # 49MB — лимит Telegram
 
 pending = {}
 
@@ -60,6 +63,39 @@ def cleanup_all_downloads():
             os.remove(f)
         except Exception:
             pass
+
+
+def compress_video(input_path: str, target_size_bytes: int) -> str:
+    """Сжимает видео до нужного размера через ffmpeg"""
+    output_path = input_path.replace(".mp4", "_compressed.mp4")
+
+    # Получаем длительность видео
+    probe = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", input_path
+    ], capture_output=True, text=True)
+
+    duration = float(probe.stdout.strip())
+
+    # Считаем нужный битрейт (в kbps), оставляем 128kbps на аудио
+    target_bits = target_size_bytes * 8
+    audio_bits = 128 * 1024 * duration
+    video_bits = target_bits - audio_bits
+    video_bitrate = int(video_bits / duration / 1024)
+
+    if video_bitrate < 100:
+        video_bitrate = 100
+
+    subprocess.run([
+        "ffmpeg", "-i", input_path,
+        "-b:v", f"{video_bitrate}k",
+        "-b:a", "128k",
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-y", output_path
+    ], capture_output=True)
+
+    return output_path
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,7 +145,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         pending[user_id] = {"url": url, "title": title, "thumbnail": thumbnail}
 
-        # Только 720p и 480p
         buttons = [[
             InlineKeyboardButton("🟢 720p", callback_data=f"dl_{user_id}_720"),
             InlineKeyboardButton("🟡 480p", callback_data=f"dl_{user_id}_480"),
@@ -174,12 +209,11 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         pass
 
-    msg = await query.message.reply_text(f"⏳ Скачиваю {quality}p... Подожди, для больших видео это может занять время.")
+    msg = await query.message.reply_text(f"⏳ Скачиваю {quality}p...")
 
     ydl_opts = {
         **get_ydl_opts_base(),
         "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
-        # Без лимита размера
         "format": f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best",
         "merge_output_format": "mp4",
     }
@@ -188,6 +222,7 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
         ydl_opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
 
     filename = None
+    compressed = None
 
     try:
         loop = asyncio.get_event_loop()
@@ -214,46 +249,49 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
 
         file_size = os.path.getsize(filename)
         file_size_mb = file_size / (1024 * 1024)
+        send_file = filename
+
+        # Если файл больше 49MB — сжимаем
+        if file_size > MAX_SIZE:
+            await msg.edit_text(f"⚙️ Файл {file_size_mb:.1f} MB — сжимаю до 49MB...")
+            compressed = await loop.run_in_executor(
+                None, compress_video, filename, MAX_SIZE
+            )
+            if os.path.exists(compressed):
+                send_file = compressed
+                file_size_mb = os.path.getsize(compressed) / (1024 * 1024)
+            else:
+                send_file = filename
 
         await msg.edit_text(f"📤 Отправляю {quality}p ({file_size_mb:.1f} MB)...")
 
-        with open(filename, "rb") as video_file:
-            if file_size <= 50 * 1024 * 1024:
-                # До 50MB — отправляем как видео (с плеером)
-                await query.message.reply_video(
-                    video=video_file,
-                    caption=f"🎬 {title[:200]}\n📺 {quality}p",
-                    supports_streaming=True,
-                    read_timeout=300,
-                    write_timeout=300,
-                    connect_timeout=60,
-                )
-            else:
-                # Больше 50MB — отправляем как файл
-                await query.message.reply_document(
-                    document=video_file,
-                    caption=f"🎬 {title[:200]}\n📺 {quality}p\n📦 {file_size_mb:.1f} MB",
-                    read_timeout=600,
-                    write_timeout=600,
-                    connect_timeout=60,
-                )
+        with open(send_file, "rb") as video_file:
+            await query.message.reply_video(
+                video=video_file,
+                caption=f"🎬 {title[:200]}\n📺 {quality}p",
+                supports_streaming=True,
+                read_timeout=300,
+                write_timeout=300,
+                connect_timeout=60,
+            )
 
         await msg.delete()
-        del pending[user_id]
+        if user_id in pending:
+            del pending[user_id]
 
     except Exception as e:
         error_msg = str(e)
         if "Timed out" in error_msg or "timed out" in error_msg.lower():
             await msg.edit_text("❌ Таймаут при отправке. Попробуй ещё раз.")
+        elif "413" in error_msg or "Request Entity Too Large" in error_msg:
+            await msg.edit_text("❌ Видео слишком большое даже после сжатия. Попробуй 480p.")
         elif "Private" in error_msg or "private" in error_msg:
             await msg.edit_text("❌ Видео приватное — скачать невозможно")
-        elif "not supported" in error_msg.lower():
-            await msg.edit_text("❌ Этот сайт или формат не поддерживается")
         else:
             await msg.edit_text(f"❌ Ошибка:\n{error_msg[:300]}")
     finally:
-        # Всегда удаляем файл после отправки или ошибки
         cleanup_file(filename)
+        cleanup_file(compressed)
 
 
 def main():
