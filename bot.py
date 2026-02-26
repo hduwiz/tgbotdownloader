@@ -65,37 +65,55 @@ def cleanup_all_downloads():
             pass
 
 
-def compress_video(input_path: str, target_size_bytes: int) -> str:
-    """Сжимает видео до нужного размера через ffmpeg"""
-    output_path = input_path.replace(".mp4", "_compressed.mp4")
-
-    # Получаем длительность видео
+def get_video_duration(filepath: str) -> float:
+    """Получает длительность видео в секундах"""
     probe = subprocess.run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", input_path
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filepath
     ], capture_output=True, text=True)
+    try:
+        return float(probe.stdout.strip())
+    except Exception:
+        return 0
 
-    duration = float(probe.stdout.strip())
 
-    # Считаем нужный битрейт (в kbps), оставляем 128kbps на аудио
-    target_bits = target_size_bytes * 8
-    audio_bits = 128 * 1024 * duration
-    video_bits = target_bits - audio_bits
-    video_bitrate = int(video_bits / duration / 1024)
+def split_video(filepath: str, max_size_bytes: int) -> list:
+    """Разбивает видео на части по размеру, возвращает список путей"""
+    file_size = os.path.getsize(filepath)
+    if file_size <= max_size_bytes:
+        return [filepath]
 
-    if video_bitrate < 100:
-        video_bitrate = 100
+    duration = get_video_duration(filepath)
+    if duration <= 0:
+        return [filepath]
 
-    subprocess.run([
-        "ffmpeg", "-i", input_path,
-        "-b:v", f"{video_bitrate}k",
-        "-b:a", "128k",
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        "-y", output_path
-    ], capture_output=True)
+    # Считаем на сколько частей делить
+    parts_count = int(file_size / max_size_bytes) + 1
+    part_duration = duration / parts_count
 
-    return output_path
+    parts = []
+    base = os.path.splitext(filepath)[0]
+
+    for i in range(parts_count):
+        start_time = i * part_duration
+        part_path = f"{base}_part{i+1}.mp4"
+
+        subprocess.run([
+            "ffmpeg", "-i", filepath,
+            "-ss", str(start_time),
+            "-t", str(part_duration),
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-avoid_negative_ts", "1",
+            "-y", part_path
+        ], capture_output=True)
+
+        if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
+            parts.append(part_path)
+
+    return parts if parts else [filepath]
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,7 +240,7 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
         ydl_opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
 
     filename = None
-    compressed = None
+    part_files = []
 
     try:
         loop = asyncio.get_event_loop()
@@ -249,31 +267,37 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
 
         file_size = os.path.getsize(filename)
         file_size_mb = file_size / (1024 * 1024)
-        send_file = filename
 
-        # Если файл больше 49MB — сжимаем
+        # Разбиваем на части если нужно
         if file_size > MAX_SIZE:
-            await msg.edit_text(f"⚙️ Файл {file_size_mb:.1f} MB — сжимаю до 49MB...")
-            compressed = await loop.run_in_executor(
-                None, compress_video, filename, MAX_SIZE
+            parts_count = int(file_size / MAX_SIZE) + 1
+            await msg.edit_text(
+                f"✂️ Видео {file_size_mb:.1f} MB — разбиваю на {parts_count} части..."
             )
-            if os.path.exists(compressed):
-                send_file = compressed
-                file_size_mb = os.path.getsize(compressed) / (1024 * 1024)
+            part_files = await loop.run_in_executor(None, split_video, filename, MAX_SIZE)
+        else:
+            part_files = [filename]
+
+        total_parts = len(part_files)
+        await msg.edit_text(f"📤 Отправляю {total_parts} {'часть' if total_parts == 1 else 'части' if total_parts < 5 else 'частей'}...")
+
+        for i, part_path in enumerate(part_files, 1):
+            part_size_mb = os.path.getsize(part_path) / (1024 * 1024)
+
+            if total_parts == 1:
+                caption = f"🎬 {title[:180]}\n📺 {quality}p"
             else:
-                send_file = filename
+                caption = f"🎬 {title[:150]}\n📺 {quality}p  |  📦 Часть {i} из {total_parts}"
 
-        await msg.edit_text(f"📤 Отправляю {quality}p ({file_size_mb:.1f} MB)...")
-
-        with open(send_file, "rb") as video_file:
-            await query.message.reply_video(
-                video=video_file,
-                caption=f"🎬 {title[:200]}\n📺 {quality}p",
-                supports_streaming=True,
-                read_timeout=300,
-                write_timeout=300,
-                connect_timeout=60,
-            )
+            with open(part_path, "rb") as video_file:
+                await query.message.reply_video(
+                    video=video_file,
+                    caption=caption,
+                    supports_streaming=True,
+                    read_timeout=300,
+                    write_timeout=300,
+                    connect_timeout=60,
+                )
 
         await msg.delete()
         if user_id in pending:
@@ -284,14 +308,17 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
         if "Timed out" in error_msg or "timed out" in error_msg.lower():
             await msg.edit_text("❌ Таймаут при отправке. Попробуй ещё раз.")
         elif "413" in error_msg or "Request Entity Too Large" in error_msg:
-            await msg.edit_text("❌ Видео слишком большое даже после сжатия. Попробуй 480p.")
+            await msg.edit_text("❌ Часть всё равно слишком большая. Попробуй 480p.")
         elif "Private" in error_msg or "private" in error_msg:
             await msg.edit_text("❌ Видео приватное — скачать невозможно")
         else:
             await msg.edit_text(f"❌ Ошибка:\n{error_msg[:300]}")
     finally:
+        # Удаляем оригинал и все части
         cleanup_file(filename)
-        cleanup_file(compressed)
+        for p in part_files:
+            if p != filename:
+                cleanup_file(p)
 
 
 def main():
