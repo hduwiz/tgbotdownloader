@@ -9,7 +9,7 @@ API_ID    = 39723229          # число с my.telegram.org
 API_HASH  = "3e2b8ae519ce46f1e13f286050a56bca"         # хеш с my.telegram.org
 PHONE     = "+380632362615"         # твой номер +380...
 BOT_TOKEN = "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE"
-BOT_USERNAME = "massonsporndownloader_bot"
+##BOT_USERNAME = "massonsporndownloader_bot"
 # =============================================
 
 DOWNLOAD_DIR = "./downloads"
