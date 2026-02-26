@@ -5,46 +5,38 @@ import yt_dlp
 from telethon import TelegramClient, events
 
 # =============================================
-# ВСТАВЬ СВОИ ДАННЫЕ СЮДА
-API_ID   = 39723229          # число с my.telegram.org
-API_HASH = "3e2b8ae519ce46f1e13f286050a56bca"         # хеш с my.telegram.org
-PHONE    = "+380632362615"         # твой номер +380...
-BOT_TOKEN = "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE"        # токен от @BotFather
-
-ALLOWED_SOURCES = [
-    "youtube.com",
-    "youtu.be",
-    "vimeo.com",
-    "twitter.com",
-    "x.com",
-    "instagram.com",
-    "tiktok.com",
-    "pornhub.com",
-    "xvideos.com",
-    "xhamster.com",
-    "xnxx.com",
-]
+API_ID    = 39723229          # число с my.telegram.org
+API_HASH  = "3e2b8ae519ce46f1e13f286050a56bca"         # хеш с my.telegram.org
+PHONE     = "+380632362615"         # твой номер +380...
+BOT_TOKEN = "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE"         # токен от @BotFather
 # =============================================
 
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+ALLOWED_SOURCES = [
+    "youtube.com", "youtu.be", "vimeo.com",
+    "twitter.com", "x.com", "instagram.com",
+    "tiktok.com", "pornhub.com", "xvideos.com",
+    "xhamster.com", "xnxx.com",
+]
+
 pending = {}
 
 
-def is_allowed(url: str) -> bool:
-    return any(source in url for source in ALLOWED_SOURCES)
+def is_allowed(url):
+    return any(s in url for s in ALLOWED_SOURCES)
 
 
-def cleanup_file(filepath: str):
+def cleanup_file(path):
     try:
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
+        if path and os.path.exists(path):
+            os.remove(path)
     except Exception:
         pass
 
 
-def cleanup_all_downloads():
+def cleanup_all():
     for f in glob.glob(f"{DOWNLOAD_DIR}/*"):
         try:
             os.remove(f)
@@ -52,27 +44,25 @@ def cleanup_all_downloads():
             pass
 
 
-def get_ydl_opts_base():
+def get_ydl_opts():
     return {
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 60,
         "retries": 5,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
         },
     }
 
 
 async def main():
-    cleanup_all_downloads()
+    cleanup_all()
 
-    # Userbot — твой аккаунт с Premium (отправляет файлы до 2GB)
     userbot = TelegramClient("userbot_session", API_ID, API_HASH)
     await userbot.start(phone=PHONE)
     print("✅ Userbot запущен")
 
-    # Bot — принимает команды
     bot = await TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
     print("✅ Бот запущен")
 
@@ -80,15 +70,15 @@ async def main():
     async def start_handler(event):
         await event.respond(
             "👋 Привет! Карман меня заказал.\n\n"
-            "📎 Отправь ссылку на видео — скачаю и пришлю без лимитов (до 2GB)."
+            "📎 Отправь ссылку на видео — скачаю без лимитов (до 2GB)."
         )
 
     @bot.on(events.NewMessage)
     async def url_handler(event):
-        if event.text and event.text.startswith("/"):
+        if not event.text or event.text.startswith("/"):
             return
 
-        url = event.text.strip() if event.text else ""
+        url = event.text.strip()
         if not url.startswith("http"):
             return
 
@@ -97,11 +87,12 @@ async def main():
             return
 
         user_id = event.sender_id
-        chat_id = event.chat_id
+        # Сохраняем user_id для userbot — он использует его напрямую
+        chat_id = event.sender_id
 
-        msg = await event.respond("🔍 Получаю информацию о видео...")
+        msg = await event.respond("🔍 Получаю информацию...")
 
-        ydl_opts = {**get_ydl_opts_base(), "skip_download": True}
+        ydl_opts = {**get_ydl_opts(), "skip_download": True}
         if "tiktok.com" in url:
             ydl_opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
 
@@ -120,14 +111,14 @@ async def main():
             uploader = info.get("uploader") or info.get("channel") or ""
 
             formats = info.get("formats", [])
-            available_heights = set()
+            heights = set()
             for f in formats:
                 h = f.get("height")
                 if h and f.get("vcodec") != "none":
-                    available_heights.add(h)
+                    heights.add(h)
 
             wanted = [1080, 720, 480, 360]
-            available = [q for q in wanted if any(h >= q for h in available_heights)]
+            available = [q for q in wanted if any(h >= q for h in heights)]
             if not available:
                 available = [720, 480]
 
@@ -186,7 +177,7 @@ async def main():
         msg = await event.respond(f"⏳ Скачиваю {quality}p...")
 
         ydl_opts = {
-            **get_ydl_opts_base(),
+            **get_ydl_opts(),
             "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
             "format": f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best",
             "merge_output_format": "mp4",
@@ -222,20 +213,23 @@ async def main():
 
             file_size_mb = os.path.getsize(filename) / (1024 * 1024)
             await msg.edit(f"📤 Отправляю {quality}p ({file_size_mb:.1f} MB)...")
+            print(f"📤 Отправляю файл {filename} ({file_size_mb:.1f} MB) в chat_id={chat_id}")
 
-            # Отправляем через USERBOT — Premium аккаунт, лимит до 2GB
+            # Отправляем через userbot (Premium — до 2GB)
             await userbot.send_file(
                 chat_id,
                 filename,
                 caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {file_size_mb:.1f} MB",
                 supports_streaming=True,
             )
+            print(f"✅ Файл отправлен!")
 
             await msg.delete()
             if user_id in pending:
                 del pending[user_id]
 
         except Exception as e:
+            print(f"❌ Ошибка отправки: {e}")
             await msg.edit(f"❌ Ошибка:\n{str(e)[:300]}")
         finally:
             cleanup_file(filename)
