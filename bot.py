@@ -3,7 +3,7 @@ import asyncio
 import glob
 import yt_dlp
 from telethon import TelegramClient, events
-from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+from telethon.tl.types import InputPeerUser
 # =============================================
 API_ID    = 39723229          # число с my.telegram.org
 API_HASH  = "3e2b8ae519ce46f1e13f286050a56bca"         # хеш с my.telegram.org
@@ -23,6 +23,8 @@ ALLOWED_SOURCES = [
 ]
 
 pending = {}
+# Кэш: user_id -> access_hash (userbot узнаёт его когда видит юзера)
+user_cache = {}
 
 
 def is_allowed(url):
@@ -60,21 +62,24 @@ def get_ydl_opts():
 async def main():
     cleanup_all()
 
-    # Userbot — Premium аккаунт, загружает файлы до 2GB
     userbot = TelegramClient("userbot_session", API_ID, API_HASH)
     await userbot.start(phone=PHONE)
     print("✅ Userbot запущен")
 
-    # Bot — принимает команды от пользователей
     bot = await TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
     print("✅ Бот запущен")
 
-    # Получаем entity бота через userbot — чтобы userbot мог слать ему файлы
-    bot_entity = await userbot.get_entity(BOT_USERNAME)
-    print(f"✅ Bot entity получен: {bot_entity.id}")
+    # Userbot слушает все входящие — чтобы узнать access_hash пользователей
+    @userbot.on(events.NewMessage(incoming=True))
+    async def userbot_listener(event):
+        if event.sender_id:
+            sender = await event.get_sender()
+            if hasattr(sender, "access_hash") and sender.access_hash:
+                user_cache[event.sender_id] = sender.access_hash
 
     @bot.on(events.NewMessage(pattern="/start"))
     async def start_handler(event):
+        # Когда юзер пишет боту — userbot тоже получает инфу через своего listener
         await event.respond(
             "👋 Привет! Карман меня заказал.\n\n"
             "📎 Отправь ссылку на видео — скачаю без лимитов (до 2GB)."
@@ -95,6 +100,14 @@ async def main():
 
         user_id = event.sender_id
         chat_id = event.chat_id
+
+        # Сохраняем access_hash если бот видит sender
+        try:
+            sender = await event.get_sender()
+            if hasattr(sender, "access_hash") and sender.access_hash:
+                user_cache[user_id] = sender.access_hash
+        except Exception:
+            pass
 
         msg = await event.respond("🔍 Получаю информацию...")
 
@@ -174,6 +187,14 @@ async def main():
             await event.respond("❌ Сессия устарела. Отправь ссылку заново.")
             return
 
+        # Сохраняем access_hash
+        try:
+            sender = await event.get_sender()
+            if hasattr(sender, "access_hash") and sender.access_hash:
+                user_cache[user_id] = sender.access_hash
+        except Exception:
+            pass
+
         info = pending[user_id]
         url = info["url"]
         title = info["title"]
@@ -218,30 +239,55 @@ async def main():
 
             file_size_mb = os.path.getsize(filename) / (1024 * 1024)
             await msg.edit(f"📤 Отправляю {quality}p ({file_size_mb:.1f} MB)...")
-            print(f"📤 Загружаю файл через userbot -> пересылаю в chat_id={chat_id}")
 
-            # Шаг 1: userbot загружает файл и отправляет себе в Saved Messages
-            sent = await userbot.send_file(
-                "me",
-                filename,
-                caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {file_size_mb:.1f} MB",
-                supports_streaming=True,
-            )
-            print(f"✅ Файл загружен в Saved Messages, пересылаю в чат...")
+            # Пробуем получить peer для userbot разными способами
+            peer = None
 
-            # Шаг 2: пересылаем из Saved Messages в нужный чат через bot
-            await bot.forward_messages(chat_id, sent.id, "me")
-            print(f"✅ Переслано в chat_id={chat_id}!")
+            # Способ 1: через access_hash из кэша
+            if user_id in user_cache:
+                try:
+                    peer = InputPeerUser(user_id, user_cache[user_id])
+                    print(f"📍 Используем peer из кэша для user_id={user_id}")
+                except Exception as e:
+                    print(f"⚠️ Кэш не сработал: {e}")
 
-            # Удаляем из Saved Messages
-            await userbot.delete_messages("me", sent.id)
+            # Способ 2: userbot ищет юзера напрямую
+            if peer is None:
+                try:
+                    entity = await userbot.get_input_entity(user_id)
+                    peer = entity
+                    print(f"📍 Получили entity через userbot")
+                except Exception as e:
+                    print(f"⚠️ get_input_entity не сработал: {e}")
+
+            # Способ 3: отправляем себе и пересылаем через userbot
+            if peer is None:
+                print(f"📍 Fallback: отправляем через Saved Messages")
+                sent = await userbot.send_file(
+                    "me",
+                    filename,
+                    caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {file_size_mb:.1f} MB",
+                    supports_streaming=True,
+                )
+                # Пересылаем через userbot напрямую используя chat_id бота
+                await userbot.forward_messages(chat_id, sent.id, "me")
+                await userbot.delete_messages("me", sent.id)
+                print(f"✅ Переслано через Saved Messages в chat_id={chat_id}")
+            else:
+                await userbot.send_file(
+                    peer,
+                    filename,
+                    caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {file_size_mb:.1f} MB",
+                    supports_streaming=True,
+                )
+                print(f"✅ Отправлено напрямую!")
 
             await msg.delete()
             if user_id in pending:
                 del pending[user_id]
 
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f"❌ Ошибка отправки: {e}")
             await msg.edit(f"❌ Ошибка:\n{str(e)[:300]}")
         finally:
             cleanup_file(filename)
@@ -256,5 +302,3 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-if __name__ == "__main__":
-    asyncio.run(main())
