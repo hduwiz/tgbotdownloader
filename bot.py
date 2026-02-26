@@ -3,12 +3,13 @@ import asyncio
 import glob
 import yt_dlp
 from telethon import TelegramClient, events
-from telethon.tl.types import InputMessagesFilterVideo
 
-API_ID   = "39723229"  # твой api_id
-API_HASH = "3e2b8ae519ce46f1e13f286050a56bca"
-PHONE    = "+380632362615"  # твой номер
-BOT_TOKEN = "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE"
+# =============================================
+# ВСТАВЬ СВОИ ДАННЫЕ СЮДА
+API_ID   = 39723229          # число с my.telegram.org
+API_HASH = "3e2b8ae519ce46f1e13f286050a56bca"         # хеш с my.telegram.org
+PHONE    = "+380632362615"         # твой номер +380...
+BOT_TOKEN = "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE"        # токен от @BotFather
 
 ALLOWED_SOURCES = [
     "youtube.com",
@@ -28,8 +29,7 @@ ALLOWED_SOURCES = [
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# Храним состояние: ожидаем выбор качества
-pending = {}  # user_id -> {url, title, thumbnail, chat_id, msg_id}
+pending = {}
 
 
 def is_allowed(url: str) -> bool:
@@ -67,16 +67,15 @@ def get_ydl_opts_base():
 async def main():
     cleanup_all_downloads()
 
-    # Клиент userbot (твой аккаунт с Premium — для загрузки до 2GB)
+    # Userbot — твой аккаунт с Premium (отправляет файлы до 2GB)
     userbot = TelegramClient("userbot_session", API_ID, API_HASH)
     await userbot.start(phone=PHONE)
     print("✅ Userbot запущен")
 
-    # Клиент бота (для приёма команд)
+    # Bot — принимает команды
     bot = await TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
     print("✅ Бот запущен")
 
-    # ── /start ──────────────────────────────────────────
     @bot.on(events.NewMessage(pattern="/start"))
     async def start_handler(event):
         await event.respond(
@@ -84,7 +83,6 @@ async def main():
             "📎 Отправь ссылку на видео — скачаю и пришлю без лимитов (до 2GB)."
         )
 
-    # ── Получение ссылки ────────────────────────────────
     @bot.on(events.NewMessage)
     async def url_handler(event):
         if event.text and event.text.startswith("/"):
@@ -121,7 +119,6 @@ async def main():
             duration = info.get("duration")
             uploader = info.get("uploader") or info.get("channel") or ""
 
-            # Доступные качества
             formats = info.get("formats", [])
             available_heights = set()
             for f in formats:
@@ -137,9 +134,7 @@ async def main():
             pending[user_id] = {
                 "url": url,
                 "title": title,
-                "thumbnail": thumbnail,
                 "chat_id": chat_id,
-                "available": available,
             }
 
             dur_str = ""
@@ -148,12 +143,12 @@ async def main():
                 hours, mins = divmod(mins, 60)
                 dur_str = f"\n⏱ {hours}:{mins:02d}:{secs:02d}" if hours else f"\n⏱ {mins}:{secs:02d}"
 
-            quality_buttons = "  ".join([f"[{q}p] /q{q}_{user_id}" for q in available])
+            quality_lines = "\n".join([f"  /q{q}_{user_id}" for q in available])
 
             text = (
                 f"🎬 {title[:120]}\n"
                 f"{'👤 ' + uploader if uploader else ''}{dur_str}\n\n"
-                f"Выбери качество:\n{quality_buttons}"
+                f"Выбери качество:\n{quality_lines}"
             )
 
             await msg.delete()
@@ -169,7 +164,6 @@ async def main():
         except Exception as e:
             await msg.edit(f"❌ Ошибка: {str(e)[:200]}")
 
-    # ── Выбор качества /q720_12345678 ───────────────────
     @bot.on(events.NewMessage(pattern=r"/q(\d+)_(\d+)"))
     async def quality_handler(event):
         match = event.pattern_match
@@ -177,7 +171,6 @@ async def main():
         owner_id = int(match.group(2))
         user_id = event.sender_id
 
-        # Только тот кто запросил может выбрать качество
         if user_id != owner_id:
             return
 
@@ -230,13 +223,12 @@ async def main():
             file_size_mb = os.path.getsize(filename) / (1024 * 1024)
             await msg.edit(f"📤 Отправляю {quality}p ({file_size_mb:.1f} MB)...")
 
-            # Отправляем через USERBOT (Premium = до 2GB)
+            # Отправляем через USERBOT — Premium аккаунт, лимит до 2GB
             await userbot.send_file(
                 chat_id,
                 filename,
                 caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {file_size_mb:.1f} MB",
                 supports_streaming=True,
-                progress_callback=None,
             )
 
             await msg.delete()
@@ -244,15 +236,11 @@ async def main():
                 del pending[user_id]
 
         except Exception as e:
-            error_msg = str(e)
-            if "Timed out" in error_msg or "timed out" in error_msg.lower():
-                await msg.edit("❌ Таймаут. Попробуй ещё раз.")
-            else:
-                await msg.edit(f"❌ Ошибка:\n{error_msg[:300]}")
+            await msg.edit(f"❌ Ошибка:\n{str(e)[:300]}")
         finally:
             cleanup_file(filename)
 
-    print("🤖 Всё запущено! Ожидаю сообщения...")
+    print("🤖 Всё запущено!")
     await asyncio.gather(
         bot.run_until_disconnected(),
         userbot.run_until_disconnected(),
