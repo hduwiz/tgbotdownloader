@@ -88,12 +88,17 @@ async def download(c: CallbackQuery, bot: Bot):
             await status.edit_text("✂️ Нарезка по 30 сек...")
             parts = await asyncio.get_event_loop().run_in_executor(None, split_video, path)
             
-            for part in parts:
-                await bot.send_video(chat_id=c.message.chat.id, video=FSInputFile(part), request_timeout=600)
+           for i, part in enumerate(parts):
+                # Формируем красивую подпись
+                caption_text = f"🎬 <b>{data['title'][:100]}</b>\n📦 Часть {i+1}/{len(parts)} | {qual}p"
+                
+                await bot.send_video(
+                    chat_id=c.message.chat.id, 
+                    video=FSInputFile(part), 
+                    caption=caption_text, # Добавили подпись обратно
+                    request_timeout=600
+                )
                 cleanup(part)
-            await status.delete()
-        except: await c.message.answer("❌ Ошибка")
-        finally: cleanup(path)
 
 async def main():
     # Очистка старых файлов перед стартом
