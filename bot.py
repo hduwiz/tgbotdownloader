@@ -9,14 +9,13 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
-from aiohttp import ClientTimeout
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =============================================
 BOT_TOKEN = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
-LOCAL_API  = os.environ.get("LOCAL_API_URL", "http://telegram-bot-api:8081")
+LOCAL_API = os.environ.get("LOCAL_API_URL", "http://telegram-bot-api:8081")
 # =============================================
 
 DOWNLOAD_DIR = "./downloads"
@@ -31,10 +30,8 @@ ALLOWED_SOURCES = [
 
 pending = {}
 
-
 def is_allowed(url: str) -> bool:
     return any(s in url for s in ALLOWED_SOURCES)
-
 
 def cleanup_file(path: str):
     try:
@@ -43,14 +40,12 @@ def cleanup_file(path: str):
     except Exception:
         pass
 
-
 def cleanup_all():
     for f in glob.glob(f"{DOWNLOAD_DIR}/*"):
         try:
             os.remove(f)
         except Exception:
             pass
-
 
 def get_ydl_opts():
     return {
@@ -59,13 +54,10 @@ def get_ydl_opts():
         "socket_timeout": 60,
         "retries": 5,
         "concurrent_fragment_downloads": 10,
-        "buffersize": 1024 * 16,
-        "http_chunk_size": 10485760,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
         },
     }
-
 
 async def fetch_info(url: str) -> dict:
     opts = {**get_ydl_opts(), "skip_download": True}
@@ -74,14 +66,20 @@ async def fetch_info(url: str) -> dict:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
 
-
 async def download_video(url: str, quality: int) -> str:
+    # Если quality == 0, скачиваем самое лучшее без ограничений
+    if quality == 0:
+        format_str = "bestvideo+bestaudio/best"
+    else:
+        format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+
     opts = {
         **get_ydl_opts(),
         "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
-        "format": f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best",
+        "format": format_str,
         "merge_output_format": "mp4",
     }
+    
     if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
 
@@ -99,17 +97,14 @@ async def download_video(url: str, quality: int) -> str:
 
     return await loop.run_in_executor(None, do_download)
 
-
 dp = Dispatcher()
-
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
-        "👋 Привет! Карман меня заказал.\n\n"
-        "📎 Отправь ссылку на видео — скачаю без лимитов (до 2GB)!"
+        "👋 Привет! Я скачаю видео в оригинальном качестве.\n\n"
+        "📎 Отправь ссылку — поддержка файлов до 2GB активна!"
     )
-
 
 @dp.message(F.text)
 async def handle_url(message: Message):
@@ -127,8 +122,7 @@ async def handle_url(message: Message):
 
     try:
         info = await fetch_info(url)
-
-        title    = info.get("title") or "Видео"
+        title = info.get("title") or "Видео"
         thumbnail = info.get("thumbnail")
         duration = info.get("duration")
         uploader = info.get("uploader") or info.get("channel") or ""
@@ -139,8 +133,8 @@ async def handle_url(message: Message):
             if h and f.get("vcodec") != "none":
                 heights.add(h)
 
-        wanted   = [1080, 720, 480, 360]
-        available = [q for q in wanted if any(h >= q for h in heights)] or [720, 480]
+        wanted = [1080, 720, 480, 360]
+        available = [q for q in wanted if any(h >= q for h in heights)]
 
         pending[user_id] = {"url": url, "title": title}
 
@@ -152,9 +146,13 @@ async def handle_url(message: Message):
 
         labels = {1080: "🔵 1080p", 720: "🟢 720p", 480: "🟡 480p", 360: "🔴 360p"}
         kb = InlineKeyboardBuilder()
+        
+        # Кнопка для оригинального качества
+        kb.button(text="🔥 Original (Best)", callback_data=f"dl_{user_id}_0")
+        
         for q in available:
             kb.button(text=labels.get(q, f"{q}p"), callback_data=f"dl_{user_id}_{q}")
-        kb.adjust(len(available))
+        kb.adjust(1, len(available))
 
         caption = (
             f"🎬 <b>{title[:100]}</b>\n"
@@ -163,21 +161,16 @@ async def handle_url(message: Message):
         )
 
         await msg.delete()
-
         if thumbnail:
             try:
-                await message.answer_photo(
-                    photo=thumbnail, caption=caption,
-                    parse_mode="HTML", reply_markup=kb.as_markup()
-                )
+                await message.answer_photo(photo=thumbnail, caption=caption, reply_markup=kb.as_markup())
             except Exception:
-                await message.answer(caption, parse_mode="HTML", reply_markup=kb.as_markup())
+                await message.answer(caption, reply_markup=kb.as_markup())
         else:
-            await message.answer(caption, parse_mode="HTML", reply_markup=kb.as_markup())
+            await message.answer(caption, reply_markup=kb.as_markup())
 
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
 
 @dp.callback_query(F.data.startswith("dl_"))
 async def handle_quality(callback: CallbackQuery, bot: Bot):
@@ -190,46 +183,36 @@ async def handle_quality(callback: CallbackQuery, bot: Bot):
         return
 
     if user_id not in pending:
-        await callback.answer("Сессия устарела, отправь ссылку заново", show_alert=True)
+        await callback.answer("Сессия устарела", show_alert=True)
         return
 
     await callback.answer()
-
+    
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
+    except:
         pass
 
-    info  = pending[user_id]
-    url   = info["url"]
-    title = info["title"]
+    info = pending[user_id]
+    url, title = info["url"], info["title"]
+    q_text = "Original" if quality == 0 else f"{quality}p"
 
-    msg = await callback.message.answer(f"⏳ Скачиваю {quality}p...")
+    msg = await callback.message.answer(f"⏳ Скачиваю {q_text}...")
 
     filename = None
     try:
         filename = await download_video(url, quality)
-
-        if not os.path.exists(filename):
-            files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith((".mp4", ".webm", ".mkv"))]
-            if files:
-                filename = os.path.join(DOWNLOAD_DIR, sorted(
-                    files, key=lambda x: os.path.getmtime(os.path.join(DOWNLOAD_DIR, x)))[-1])
-            else:
-                raise FileNotFoundError("Файл не найден")
-
         size_mb = os.path.getsize(filename) / (1024 * 1024)
-        await msg.edit_text(f"📤 Отправляю {quality}p ({size_mb:.1f} MB)...")
+        
+        await msg.edit_text(f"📤 Отправляю {q_text} ({size_mb:.1f} MB)...")
 
-        video = FSInputFile(filename)
         await bot.send_video(
             chat_id=callback.message.chat.id,
-            video=video,
-            caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {size_mb:.1f} MB",
+            video=FSInputFile(filename),
+            caption=f"🎬 {title[:200]}\n📺 {q_text}  |  📦 {size_mb:.1f} MB",
             supports_streaming=True,
-            request_timeout=600,
+            request_timeout=3600 # Даем 1 час на передачу файла
         )
-
         await msg.delete()
         pending.pop(user_id, None)
 
@@ -239,24 +222,24 @@ async def handle_quality(callback: CallbackQuery, bot: Bot):
     finally:
         cleanup_file(filename)
 
-
 async def main():
     cleanup_all()
-
-    # Правильный способ подключения к локальному Bot API в aiogram 3
-    timeout = ClientTimeout(total=None, connect=60, sock_read=None, sock_connect=60)
-    session = AiohttpSession(timeout=timeout)
-
+    
+    # Используем числовое значение таймаута, чтобы избежать TypeError
+    session = AiohttpSession()
+    
     bot = Bot(
         token=BOT_TOKEN,
         session=session,
         base_url=f"{LOCAL_API}/",
-        default=DefaultBotProperties(parse_mode="HTML"),
+        default=DefaultBotProperties(
+            parse_mode="HTML",
+            request_timeout=3600 # Таймаут для всех запросов
+        ),
     )
 
     logger.info("🤖 Бот запущен с локальным API!")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), polling_timeout=30)
 
 if __name__ == "__main__":
     asyncio.run(main())
