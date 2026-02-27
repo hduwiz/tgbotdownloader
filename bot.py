@@ -67,7 +67,7 @@ async def fetch_info(url: str) -> dict:
     return await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
 
 async def download_video(url: str, quality: int) -> str:
-    # Если quality == 0, скачиваем самое лучшее без ограничений
+    # 0 = Оригинальное качество
     if quality == 0:
         format_str = "bestvideo+bestaudio/best"
     else:
@@ -147,7 +147,7 @@ async def handle_url(message: Message):
         labels = {1080: "🔵 1080p", 720: "🟢 720p", 480: "🟡 480p", 360: "🔴 360p"}
         kb = InlineKeyboardBuilder()
         
-        # Кнопка для оригинального качества
+        # Кнопка для оригинала
         kb.button(text="🔥 Original (Best)", callback_data=f"dl_{user_id}_0")
         
         for q in available:
@@ -206,18 +206,19 @@ async def handle_quality(callback: CallbackQuery, bot: Bot):
         
         await msg.edit_text(f"📤 Отправляю {q_text} ({size_mb:.1f} MB)...")
 
+        # Отправка видео с огромным таймаутом
         await bot.send_video(
             chat_id=callback.message.chat.id,
             video=FSInputFile(filename),
             caption=f"🎬 {title[:200]}\n📺 {q_text}  |  📦 {size_mb:.1f} MB",
             supports_streaming=True,
-            request_timeout=3600 # Даем 1 час на передачу файла
+            request_timeout=3600 
         )
         await msg.delete()
         pending.pop(user_id, None)
 
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error(f"Ошибка при загрузке: {e}")
         await msg.edit_text(f"❌ Ошибка:\n{str(e)[:300]}")
     finally:
         cleanup_file(filename)
@@ -225,21 +226,28 @@ async def handle_quality(callback: CallbackQuery, bot: Bot):
 async def main():
     cleanup_all()
     
-    # Используем числовое значение таймаута, чтобы избежать TypeError
-    session = AiohttpSession()
+    # ПРАВИЛЬНО: Таймаут задается здесь, в сессии
+    session = AiohttpSession(
+        timeout=3600 
+    )
     
     bot = Bot(
         token=BOT_TOKEN,
         session=session,
         base_url=f"{LOCAL_API}/",
         default=DefaultBotProperties(
-            parse_mode="HTML",
-            request_timeout=3600 # Таймаут для всех запросов
+            parse_mode="HTML"
         ),
     )
 
     logger.info("🤖 Бот запущен с локальным API!")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), polling_timeout=30)
+    
+    # polling_timeout — это частота опроса серверов Telegram
+    await dp.start_polling(
+        bot, 
+        allowed_updates=dp.resolve_used_update_types(),
+        polling_timeout=30
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
