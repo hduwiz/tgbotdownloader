@@ -51,11 +51,15 @@ def get_ydl_opts():
     return {
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 60,
-        "retries": 5,
-        "concurrent_fragment_downloads": 10,
+        "socket_timeout": 30,
+        "retries": 10,
+        "concurrent_fragment_downloads": 15,
+        "buffersize": 1024 * 1024, # 1MB буфер
+        "noprogress": True,
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         },
     }
 
