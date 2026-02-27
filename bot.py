@@ -9,6 +9,7 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
+from aiohttp import ClientTimeout
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -243,7 +244,8 @@ async def main():
     cleanup_all()
 
     # Правильный способ подключения к локальному Bot API в aiogram 3
-    session = AiohttpSession(timeout=600)
+    timeout = ClientTimeout(total=None, connect=60, sock_read=None, sock_connect=60)
+    session = AiohttpSession(timeout=timeout)
 
     bot = Bot(
         token=BOT_TOKEN,
