@@ -7,13 +7,14 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.default import DefaultBotProperties
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =============================================
-BOT_TOKEN  = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
-# Локальный Bot API сервер (поднимается в Docker)
+BOT_TOKEN = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
 LOCAL_API  = os.environ.get("LOCAL_API_URL", "http://telegram-bot-api:8081")
 # =============================================
 
@@ -56,6 +57,10 @@ def get_ydl_opts():
         "no_warnings": True,
         "socket_timeout": 60,
         "retries": 5,
+        # Многопоточное скачивание
+        "concurrent_fragment_downloads": 10,
+        "buffersize": 1024 * 16,
+        "http_chunk_size": 10485760,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
         },
@@ -87,9 +92,6 @@ async def download_video(url: str, quality: int) -> str:
             info = ydl.extract_info(url, download=True)
             fname = ydl.prepare_filename(info)
             base = os.path.splitext(fname)[0]
-            if os.path.exists(base + ".mp4"):
-                return base + ".mp4"
-            # Ищем любой скачанный файл
             for ext in [".mp4", ".webm", ".mkv"]:
                 if os.path.exists(base + ext):
                     return base + ext
@@ -97,8 +99,6 @@ async def download_video(url: str, quality: int) -> str:
 
     return await loop.run_in_executor(None, do_download)
 
-
-# ── Хендлеры ────────────────────────────────────────────
 
 dp = Dispatcher()
 
@@ -159,8 +159,7 @@ async def handle_url(message: Message):
         caption = (
             f"🎬 <b>{title[:100]}</b>\n"
             f"{'👤 ' + uploader + chr(10) if uploader else ''}"
-            f"{dur_str}\n\n"
-            f"Выбери качество:"
+            f"{dur_str}\n\nВыбери качество:"
         )
 
         await msg.delete()
@@ -168,10 +167,8 @@ async def handle_url(message: Message):
         if thumbnail:
             try:
                 await message.answer_photo(
-                    photo=thumbnail,
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=kb.as_markup()
+                    photo=thumbnail, caption=caption,
+                    parse_mode="HTML", reply_markup=kb.as_markup()
                 )
             except Exception:
                 await message.answer(caption, parse_mode="HTML", reply_markup=kb.as_markup())
@@ -183,7 +180,7 @@ async def handle_url(message: Message):
 
 
 @dp.callback_query(F.data.startswith("dl_"))
-async def handle_quality(callback: CallbackQuery):
+async def handle_quality(callback: CallbackQuery, bot: Bot):
     _, user_id_str, quality_str = callback.data.split("_")
     user_id = int(user_id_str)
     quality = int(quality_str)
@@ -203,9 +200,9 @@ async def handle_quality(callback: CallbackQuery):
     except Exception:
         pass
 
-    info     = pending[user_id]
-    url      = info["url"]
-    title    = info["title"]
+    info  = pending[user_id]
+    url   = info["url"]
+    title = info["title"]
 
     msg = await callback.message.answer(f"⏳ Скачиваю {quality}p...")
 
@@ -225,10 +222,14 @@ async def handle_quality(callback: CallbackQuery):
         await msg.edit_text(f"📤 Отправляю {quality}p ({size_mb:.1f} MB)...")
 
         video = FSInputFile(filename)
-        await callback.message.answer_video(
+
+        # Отправляем с большими таймаутами — для больших файлов
+        await bot.send_video(
+            chat_id=callback.message.chat.id,
             video=video,
             caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {size_mb:.1f} MB",
             supports_streaming=True,
+            request_timeout=600,  # 10 минут на отправку
         )
 
         await msg.delete()
@@ -244,14 +245,20 @@ async def handle_quality(callback: CallbackQuery):
 async def main():
     cleanup_all()
 
-    # Подключаемся к локальному Bot API серверу
+    # Сессия с увеличенными таймаутами
+    session = AiohttpSession(
+        api=f"{LOCAL_API}/bot{{token}}{{method}}",
+        timeout=600,  # 10 минут
+    )
+
     bot = Bot(
         token=BOT_TOKEN,
-        base_url=f"{LOCAL_API}/bot"
+        session=session,
+        default=DefaultBotProperties(parse_mode="HTML"),
     )
 
     logger.info("🤖 Бот запущен с локальным API!")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":
