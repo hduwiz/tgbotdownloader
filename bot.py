@@ -79,44 +79,72 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
     if callback.from_user.id != uid:
         return
 
-    # Проверка очереди
+    # Если бот уже что-то качает, просто уведомляем пользователя
     if download_lock.locked():
-        await callback.answer("⏳ Бот занят. Запрос добавлен в очередь...", show_alert=True)
+        await callback.answer("⏳ Бот занят другим видео. Пожалуйста, подождите своей очереди...", show_alert=True)
 
+    # Очередь
     async with download_lock:
-        # ЗАЩИТА ОТ KeyError: проверяем есть ли данные
-        if uid not in pending:
-            # Если данных нет, значит они уже обработаны или сессия истекла
+        # ПРОВЕРКА: Безопасно достаем данные. Если их нет — uid_data будет None
+        uid_data = pending.get(uid)
+        
+        if not uid_data:
+            # Если данных нет, значит запрос уже в работе или кнопка нажата дважды
+            # Пытаемся ответить, чтобы кнопка "отвисла", но не спамим ошибку в консоль
             try:
-                await callback.message.edit_text("❌ Запрос уже обработан или устарел.")
+                await callback.answer()
+                # Можно отредактировать сообщение, чтобы пользователь не путался
+                await callback.message.edit_text("✅ Это видео уже обрабатывается или ссылка устарела.")
             except:
                 pass
             return
 
+        # Если данные есть, только тогда удаляем их из словаря
         data = pending.pop(uid)
+        
         status_msg = await callback.message.edit_text(f"🚀 Начинаю загрузку ({qual}p)...")
         raw_path = f"{DOWNLOAD_DIR}/{uid}_{qual}.mp4"
         
         try:
-            ydl_opts = {**get_ydl_opts(), "outtmpl": raw_path, "format": f"bestvideo[height<={qual}][ext=mp4]+bestaudio[ext=m4a]/best[height<={qual}]/best"}
-            await asyncio.get_event_loop().run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).download([data['url']]))
+            ydl_opts = {
+                **get_ydl_opts(),
+                "outtmpl": raw_path,
+                "format": f"bestvideo[height<={qual}][ext=mp4]+bestaudio[ext=m4a]/best[height<={qual}]/best",
+                "merge_output_format": "mp4"
+            }
             
-            await status_msg.edit_text("✂️ Нарезаю по 30 секунд...")
-            parts = await asyncio.get_event_loop().run_in_executor(None, lambda: split_video_by_time(raw_path, 30))
+            # Скачивание
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: yt_dlp.YoutubeDL(ydl_opts).download([data['url']])
+            )
             
+            # Нарезка
+            await status_msg.edit_text("✂️ Нарезаю видео по 30 секунд...")
+            parts = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: split_video_by_time(raw_path, 30)
+            )
+            
+            # Отправка
             for i, part in enumerate(parts):
                 size_mb = os.path.getsize(part) / (1024 * 1024)
                 caption = f"🎬 <b>{data['title'][:100]}</b>\n📦 Часть {i+1}/{len(parts)} | {qual}p | {size_mb:.1f} MB"
-                await bot.send_video(chat_id=callback.message.chat.id, video=FSInputFile(part), caption=caption, request_timeout=600)
+                
+                await bot.send_video(
+                    chat_id=callback.message.chat.id,
+                    video=FSInputFile(part),
+                    caption=caption,
+                    supports_streaming=True,
+                    request_timeout=600
+                )
                 cleanup(part)
 
             await status_msg.delete()
+            
         except Exception as e:
-            logger.error(f"Error: {e}")
-            await callback.message.answer("❌ Ошибка при скачивании.")
+            logger.error(f"Ошибка при скачивании: {e}")
+            await callback.message.answer("❌ Произошла ошибка. Попробуй позже.")
         finally:
             cleanup(raw_path)
-
 async def main():
     for f in glob.glob(f"{DOWNLOAD_DIR}/*"): cleanup(f)
     session = AiohttpSession(timeout=3600)
