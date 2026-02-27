@@ -55,7 +55,7 @@ def get_ydl_opts():
         },
     }
 
-def split_video_by_time(input_file: str, segment_seconds: int = 60) -> list[str]:
+def split_video_by_time(input_file: str, segment_seconds: int = 30) -> list[str]:
     """Нарезает видео на части по 60 секунд без потери качества (без перекодирования)"""
     if not os.path.exists(input_file):
         return []
@@ -150,7 +150,7 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
         raw_file = await download_video(data['url'], qual)
         
         # 2. Нарезка
-        await callback.message.edit_text("✂️ Нарезаю видео на части по 60 сек...")
+        await callback.message.edit_text("✂️ Нарезаю видео на части по 30 сек...")
         parts = await asyncio.get_event_loop().run_in_executor(None, split_video_by_time, raw_file)
         
         # 3. Отправка частей
