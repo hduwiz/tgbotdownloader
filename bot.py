@@ -46,17 +46,21 @@ def get_ydl_opts():
     return {
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 60,
-        "retries": 10,
-        "concurrent_fragment_downloads": 20, # Максимальная скорость
-        "buffersize": 1024 * 512,            # Увеличенный буфер
+        "socket_timeout": 30,
+        "retries": 15,
+        "noprogress": True,
+        # Оптимизация скорости для Railway
+        "concurrent_fragment_downloads": 15, # Многопоточность
+        "buffersize": 1024 * 1024,           # Буфер 1МБ
+        "http_chunk_size": 10485760,         # Чанки по 10МБ (чтобы не резали скорость)
+        "geo_bypass": True,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         },
     }
 
 def split_video_by_time(input_file: str, segment_seconds: int = 30) -> list[str]:
-    """Нарезает видео на части по 60 секунд без потери качества (без перекодирования)"""
+    """Нарезает видео на части по 30 секунд без потери качества"""
     if not os.path.exists(input_file):
         return []
 
@@ -65,7 +69,7 @@ def split_video_by_time(input_file: str, segment_seconds: int = 30) -> list[str]
 
     cmd = [
         'ffmpeg', '-i', input_file,
-        '-c', 'copy',           # Копируем потоки БЕЗ ПЕРЕКОДИРОВАНИЯ (быстро)
+        '-c', 'copy',           # Без перекодирования (очень быстро)
         '-map', '0',
         '-segment_time', str(segment_seconds),
         '-f', 'segment',
@@ -87,7 +91,6 @@ async def fetch_info(url: str) -> dict:
     return await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
 
 async def download_video(url: str, quality: int) -> str:
-    # Ограничиваем выбор только 720 или 480
     format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}]/best"
     
     opts = {
@@ -108,7 +111,7 @@ dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("🎬 Привет! Пришли ссылку, я скачаю видео и нарежу его по 1 минуте.")
+    await message.answer("🎬 Привет! Пришли ссылку, я быстро скачаю и нарежу видео по 30 секунд.")
 
 @dp.message(F.text)
 async def handle_url(message: Message):
@@ -122,13 +125,12 @@ async def handle_url(message: Message):
         pending[user_id] = {"url": url, "title": info.get("title", "video")}
 
         kb = InlineKeyboardBuilder()
-        # Только две кнопки качества
         kb.button(text="🟢 720p (HD)", callback_data=f"dl_{user_id}_720")
         kb.button(text="🟡 480p (SD)", callback_data=f"dl_{user_id}_480")
         kb.adjust(1)
 
         await msg.edit_text(
-            f"🎬 <b>{info.get('title')[:100]}</b>\n\nВыберите качество для загрузки:",
+            f"🎬 <b>{info.get('title')[:100]}</b>\n\nВыберите качество:",
             reply_markup=kb.as_markup()
         )
     except Exception as e:
@@ -142,7 +144,7 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
     if callback.from_user.id != uid or uid not in pending: return
     
     data = pending.pop(uid)
-    await callback.message.edit_text(f"⏳ Скачиваю в {qual}p и нарезаю...")
+    await callback.message.edit_text(f"🚀 Скоростная загрузка ({qual}p)...")
 
     raw_file = None
     try:
@@ -150,13 +152,14 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
         raw_file = await download_video(data['url'], qual)
         
         # 2. Нарезка
-        await callback.message.edit_text("✂️ Нарезаю видео на части по 30 сек...")
-        parts = await asyncio.get_event_loop().run_in_executor(None, split_video_by_time, raw_file)
+        await callback.message.edit_text("✂️ Нарезаю на части по 30 секунд...")
+        # Используем segment_seconds=30
+        parts = await asyncio.get_event_loop().run_in_executor(None, lambda: split_video_by_time(raw_file, 30))
         
         # 3. Отправка частей
         for i, part in enumerate(parts):
             size = os.path.getsize(part) / (1024 * 1024)
-            caption = f"🎬 {data['title'][:100]}\n📦 Часть {i+1}/{len(parts)} | {qual}p"
+            caption = f"🎬 Часть {i+1}/{len(parts)} | {qual}p"
             
             await bot.send_video(
                 chat_id=callback.message.chat.id,
@@ -165,29 +168,26 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
                 supports_streaming=True,
                 request_timeout=600
             )
-            cleanup_file(part) # Удаляем часть после отправки
+            cleanup_file(part)
 
         await callback.message.delete()
-        cleanup_file(raw_file) # Удаляем оригинал
+        cleanup_file(raw_file)
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке: {e}")
+        logger.error(f"Ошибка: {e}")
         await callback.message.answer(f"❌ Ошибка загрузки.")
         if raw_file: cleanup_file(raw_file)
 
 async def main():
     cleanup_all()
-    # Настройка сессии без ограничений скорости
     session = AiohttpSession(timeout=3600)
-    
     bot = Bot(
         token=BOT_TOKEN, 
         session=session, 
         base_url=f"{LOCAL_API}/", 
         default=DefaultBotProperties(parse_mode="HTML")
     )
-    
-    logger.info("🤖 Бот запущен (Только 720/480 + Нарезка)")
+    logger.info("🤖 Бот запущен (Railway Speed Optimized)")
     await dp.start_polling(bot, polling_timeout=30)
 
 if __name__ == "__main__":
