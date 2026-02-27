@@ -10,6 +10,7 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -171,6 +172,18 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
         logger.error(f"Ошибка: {e}")
         await callback.message.answer(f"❌ Ошибка загрузки.")
         if raw_file: cleanup_file(raw_file)
+
+
+
+@dp.message(Command("support"))
+async def cmd_support(message: Message):
+    text = (
+        "💰 <b>Поддержать автора</b>\n\n"
+        "Если тебе нравится бот и ты хочешь закинуть копеечку "
+        "или просто угостить автора кофе — буду очень благодарен!\n\n"
+        "банка: <code>https://send.monobank.ua/jar/4xgRXxMGSF</code>\n"
+        "Crypto: <code>TEPtNgf87mmUErythBcRpTm9tnB69uD4j7</code>"
+    )
 
 async def main():
     cleanup_all()
