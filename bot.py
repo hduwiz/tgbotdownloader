@@ -2,6 +2,7 @@ import os
 import asyncio
 import glob
 import logging
+import subprocess
 import yt_dlp
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, FSInputFile
@@ -30,9 +31,6 @@ ALLOWED_SOURCES = [
 
 pending = {}
 
-def is_allowed(url: str) -> bool:
-    return any(s in url for s in ALLOWED_SOURCES)
-
 def cleanup_file(path: str):
     try:
         if path and os.path.exists(path):
@@ -42,41 +40,56 @@ def cleanup_file(path: str):
 
 def cleanup_all():
     for f in glob.glob(f"{DOWNLOAD_DIR}/*"):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
+        cleanup_file(f)
 
 def get_ydl_opts():
     return {
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 30,
+        "socket_timeout": 60,
         "retries": 10,
-        "concurrent_fragment_downloads": 15,
-        "buffersize": 1024 * 1024, # 1MB буфер
-        "noprogress": True,
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",
+        "concurrent_fragment_downloads": 20, # Максимальная скорость
+        "buffersize": 1024 * 512,            # Увеличенный буфер
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
         },
     }
 
+def split_video_by_time(input_file: str, segment_seconds: int = 60) -> list[str]:
+    """Нарезает видео на части по 60 секунд без потери качества (без перекодирования)"""
+    if not os.path.exists(input_file):
+        return []
+
+    base_name = os.path.splitext(input_file)[0]
+    output_pattern = f"{base_name}_part%03d.mp4"
+
+    cmd = [
+        'ffmpeg', '-i', input_file,
+        '-c', 'copy',           # Копируем потоки БЕЗ ПЕРЕКОДИРОВАНИЯ (быстро)
+        '-map', '0',
+        '-segment_time', str(segment_seconds),
+        '-f', 'segment',
+        '-reset_timestamps', '1',
+        output_pattern
+    ]
+    
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, check=True)
+        parts = sorted(glob.glob(f"{base_name}_part*.mp4"))
+        return parts
+    except Exception as e:
+        logger.error(f"Ошибка нарезки: {e}")
+        return [input_file]
+
 async def fetch_info(url: str) -> dict:
     opts = {**get_ydl_opts(), "skip_download": True}
-    if "tiktok.com" in url:
-        opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
 
 async def download_video(url: str, quality: int) -> str:
-    # 0 = Оригинальное качество
-    if quality == 0:
-        format_str = "bestvideo+bestaudio/best"
-    else:
-        format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
-
+    # Ограничиваем выбор только 720 или 480
+    format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}]/best"
+    
     opts = {
         **get_ydl_opts(),
         "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
@@ -84,174 +97,98 @@ async def download_video(url: str, quality: int) -> str:
         "merge_output_format": "mp4",
     }
     
-    if "tiktok.com" in url:
-        opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
-
     loop = asyncio.get_event_loop()
-
     def do_download():
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            fname = ydl.prepare_filename(info)
-            base = os.path.splitext(fname)[0]
-            for ext in [".mp4", ".webm", ".mkv"]:
-                if os.path.exists(base + ext):
-                    return base + ext
-            return fname
-
+            return ydl.prepare_filename(info)
     return await loop.run_in_executor(None, do_download)
 
 dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer(
-        "👋 Привет! Я скачаю видео в оригинальном качестве.\n\n"
-        "📎 Отправь ссылку — поддержка файлов до 2GB активна!"
-    )
+    await message.answer("🎬 Привет! Пришли ссылку, я скачаю видео и нарежу его по 1 минуте.")
 
 @dp.message(F.text)
 async def handle_url(message: Message):
     url = message.text.strip()
-    user_id = message.from_user.id
-
-    if not url.startswith("http"):
-        return
-
-    if not is_allowed(url):
-        await message.answer("❌ Источник не поддерживается.")
-        return
-
-    msg = await message.answer("🔍 Получаю информацию...")
-
+    if not url.startswith("http"): return
+    
+    msg = await message.answer("🔍 Анализирую видео...")
     try:
         info = await fetch_info(url)
-        title = info.get("title") or "Видео"
-        thumbnail = info.get("thumbnail")
-        duration = info.get("duration")
-        uploader = info.get("uploader") or info.get("channel") or ""
+        user_id = message.from_user.id
+        pending[user_id] = {"url": url, "title": info.get("title", "video")}
 
-        heights = set()
-        for f in info.get("formats", []):
-            h = f.get("height")
-            if h and f.get("vcodec") != "none":
-                heights.add(h)
-
-        wanted = [1080, 720, 480, 360]
-        available = [q for q in wanted if any(h >= q for h in heights)]
-
-        pending[user_id] = {"url": url, "title": title}
-
-        dur_str = ""
-        if duration:
-            mins, secs = divmod(int(duration), 60)
-            hours, mins = divmod(mins, 60)
-            dur_str = f"\n⏱ {hours}:{mins:02d}:{secs:02d}" if hours else f"\n⏱ {mins}:{secs:02d}"
-
-        labels = {1080: "🔵 1080p", 720: "🟢 720p", 480: "🟡 480p", 360: "🔴 360p"}
         kb = InlineKeyboardBuilder()
-        
-        # Кнопка для оригинала
-        kb.button(text="🔥 Original (Best)", callback_data=f"dl_{user_id}_0")
-        
-        for q in available:
-            kb.button(text=labels.get(q, f"{q}p"), callback_data=f"dl_{user_id}_{q}")
-        kb.adjust(1, len(available))
+        # Только две кнопки качества
+        kb.button(text="🟢 720p (HD)", callback_data=f"dl_{user_id}_720")
+        kb.button(text="🟡 480p (SD)", callback_data=f"dl_{user_id}_480")
+        kb.adjust(1)
 
-        caption = (
-            f"🎬 <b>{title[:100]}</b>\n"
-            f"{'👤 ' + uploader + chr(10) if uploader else ''}"
-            f"{dur_str}\n\nВыбери качество:"
+        await msg.edit_text(
+            f"🎬 <b>{info.get('title')[:100]}</b>\n\nВыберите качество для загрузки:",
+            reply_markup=kb.as_markup()
         )
-
-        await msg.delete()
-        if thumbnail:
-            try:
-                await message.answer_photo(photo=thumbnail, caption=caption, reply_markup=kb.as_markup())
-            except Exception:
-                await message.answer(caption, reply_markup=kb.as_markup())
-        else:
-            await message.answer(caption, reply_markup=kb.as_markup())
-
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 @dp.callback_query(F.data.startswith("dl_"))
-async def handle_quality(callback: CallbackQuery, bot: Bot):
-    _, user_id_str, quality_str = callback.data.split("_")
-    user_id = int(user_id_str)
-    quality = int(quality_str)
-
-    if callback.from_user.id != user_id:
-        await callback.answer("Это не твой запрос!", show_alert=True)
-        return
-
-    if user_id not in pending:
-        await callback.answer("Сессия устарела", show_alert=True)
-        return
-
-    await callback.answer()
+async def handle_dl(callback: CallbackQuery, bot: Bot):
+    _, uid_str, qual_str = callback.data.split("_")
+    uid, qual = int(uid_str), int(qual_str)
     
+    if callback.from_user.id != uid or uid not in pending: return
+    
+    data = pending.pop(uid)
+    await callback.message.edit_text(f"⏳ Скачиваю в {qual}p и нарезаю...")
+
+    raw_file = None
     try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except:
-        pass
-
-    info = pending[user_id]
-    url, title = info["url"], info["title"]
-    q_text = "Original" if quality == 0 else f"{quality}p"
-
-    msg = await callback.message.answer(f"⏳ Скачиваю {q_text}...")
-
-    filename = None
-    try:
-        filename = await download_video(url, quality)
-        size_mb = os.path.getsize(filename) / (1024 * 1024)
+        # 1. Скачивание
+        raw_file = await download_video(data['url'], qual)
         
-        await msg.edit_text(f"📤 Отправляю {q_text} ({size_mb:.1f} MB)...")
+        # 2. Нарезка
+        await callback.message.edit_text("✂️ Нарезаю видео на части по 60 сек...")
+        parts = await asyncio.get_event_loop().run_in_executor(None, split_video_by_time, raw_file)
+        
+        # 3. Отправка частей
+        for i, part in enumerate(parts):
+            size = os.path.getsize(part) / (1024 * 1024)
+            caption = f"🎬 {data['title'][:100]}\n📦 Часть {i+1}/{len(parts)} | {qual}p"
+            
+            await bot.send_video(
+                chat_id=callback.message.chat.id,
+                video=FSInputFile(part),
+                caption=caption,
+                supports_streaming=True,
+                request_timeout=600
+            )
+            cleanup_file(part) # Удаляем часть после отправки
 
-        # Отправка видео с огромным таймаутом
-        await bot.send_video(
-            chat_id=callback.message.chat.id,
-            video=FSInputFile(filename),
-            caption=f"🎬 {title[:200]}\n📺 {q_text}  |  📦 {size_mb:.1f} MB",
-            supports_streaming=True,
-            request_timeout=3600 
-        )
-        await msg.delete()
-        pending.pop(user_id, None)
+        await callback.message.delete()
+        cleanup_file(raw_file) # Удаляем оригинал
 
     except Exception as e:
-        logger.error(f"Ошибка при загрузке: {e}")
-        await msg.edit_text(f"❌ Ошибка:\n{str(e)[:300]}")
-    finally:
-        cleanup_file(filename)
+        logger.error(f"Ошибка при обработке: {e}")
+        await callback.message.answer(f"❌ Ошибка загрузки.")
+        if raw_file: cleanup_file(raw_file)
 
 async def main():
     cleanup_all()
-    
-    # ПРАВИЛЬНО: Таймаут задается здесь, в сессии
-    session = AiohttpSession(
-        timeout=3600 
-    )
+    # Настройка сессии без ограничений скорости
+    session = AiohttpSession(timeout=3600)
     
     bot = Bot(
-        token=BOT_TOKEN,
-        session=session,
-        base_url=f"{LOCAL_API}/",
-        default=DefaultBotProperties(
-            parse_mode="HTML"
-        ),
+        token=BOT_TOKEN, 
+        session=session, 
+        base_url=f"{LOCAL_API}/", 
+        default=DefaultBotProperties(parse_mode="HTML")
     )
-
-    logger.info("🤖 Бот запущен с локальным API!")
     
-    # polling_timeout — это частота опроса серверов Telegram
-    await dp.start_polling(
-        bot, 
-        allowed_updates=dp.resolve_used_update_types(),
-        polling_timeout=30
-    )
+    logger.info("🤖 Бот запущен (Только 720/480 + Нарезка)")
+    await dp.start_polling(bot, polling_timeout=30)
 
 if __name__ == "__main__":
     asyncio.run(main())
