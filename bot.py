@@ -111,7 +111,7 @@ dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("🚀 Бот готов! Быстро качаю и режу по 30 сек. Присылай ссылку.")
+    await message.answer("🫡Быстро качаю и режу по 30 сек. Присылай ссылку.")
 
 @dp.message(F.text)
 async def handle_url(message: Message):
