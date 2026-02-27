@@ -57,7 +57,6 @@ def get_ydl_opts():
         "no_warnings": True,
         "socket_timeout": 60,
         "retries": 5,
-        # Многопоточное скачивание
         "concurrent_fragment_downloads": 10,
         "buffersize": 1024 * 16,
         "http_chunk_size": 10485760,
@@ -128,10 +127,10 @@ async def handle_url(message: Message):
     try:
         info = await fetch_info(url)
 
-        title     = info.get("title") or "Видео"
+        title    = info.get("title") or "Видео"
         thumbnail = info.get("thumbnail")
-        duration  = info.get("duration")
-        uploader  = info.get("uploader") or info.get("channel") or ""
+        duration = info.get("duration")
+        uploader = info.get("uploader") or info.get("channel") or ""
 
         heights = set()
         for f in info.get("formats", []):
@@ -139,7 +138,7 @@ async def handle_url(message: Message):
             if h and f.get("vcodec") != "none":
                 heights.add(h)
 
-        wanted    = [1080, 720, 480, 360]
+        wanted   = [1080, 720, 480, 360]
         available = [q for q in wanted if any(h >= q for h in heights)] or [720, 480]
 
         pending[user_id] = {"url": url, "title": title}
@@ -222,14 +221,12 @@ async def handle_quality(callback: CallbackQuery, bot: Bot):
         await msg.edit_text(f"📤 Отправляю {quality}p ({size_mb:.1f} MB)...")
 
         video = FSInputFile(filename)
-
-        # Отправляем с большими таймаутами — для больших файлов
         await bot.send_video(
             chat_id=callback.message.chat.id,
             video=video,
             caption=f"🎬 {title[:200]}\n📺 {quality}p  |  📦 {size_mb:.1f} MB",
             supports_streaming=True,
-            request_timeout=600,  # 10 минут на отправку
+            request_timeout=600,
         )
 
         await msg.delete()
@@ -245,15 +242,13 @@ async def handle_quality(callback: CallbackQuery, bot: Bot):
 async def main():
     cleanup_all()
 
-    # Сессия с увеличенными таймаутами
-    session = AiohttpSession(
-        api=f"{LOCAL_API}/bot{{token}}{{method}}",
-        timeout=600,  # 10 минут
-    )
+    # Правильный способ подключения к локальному Bot API в aiogram 3
+    session = AiohttpSession(timeout=600)
 
     bot = Bot(
         token=BOT_TOKEN,
         session=session,
+        base_url=f"{LOCAL_API}/",
         default=DefaultBotProperties(parse_mode="HTML"),
     )
 
