@@ -180,7 +180,11 @@ async def main():
         base_url=f"{LOCAL_API}/", 
         default=DefaultBotProperties(parse_mode="HTML")
     )
-    logger.info("🤖 Бот запущен")
+    
+    # ПРИНУДИТЕЛЬНЫЙ СБРОС (помогает при конфликтах)
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    logger.info("🤖 Бот запущен (Railway No-Conflict)")
     await dp.start_polling(bot, polling_timeout=30)
 
 if __name__ == "__main__":
