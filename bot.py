@@ -1,7 +1,7 @@
 import os
 import asyncio
 import glob
-import subprocess
+import aiohttp
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -19,8 +19,6 @@ ALLOWED_SOURCES = [
 
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-MAX_SIZE = 44 * 1024 * 1024  # 44MB — с хорошим запасом
 
 pending = {}
 
@@ -57,72 +55,33 @@ def get_ydl_opts():
     }
 
 
-def get_duration(filepath):
-    try:
-        r = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", filepath
-        ], capture_output=True, text=True)
-        return float(r.stdout.strip())
-    except Exception:
-        return 0
+async def upload_to_gofile(filepath: str) -> str:
+    """Загружает файл на gofile.io и возвращает ссылку"""
+    async with aiohttp.ClientSession() as session:
+        # Получаем лучший сервер
+        async with session.get("https://api.gofile.io/servers") as r:
+            data = await r.json()
+            server = data["data"]["servers"][0]["name"]
 
+        # Загружаем файл
+        with open(filepath, "rb") as f:
+            form = aiohttp.FormData()
+            form.add_field("file", f, filename=os.path.basename(filepath))
 
-def split_video(filepath, max_bytes):
-    """Режет видео на части гарантированно меньше max_bytes"""
-    if os.path.getsize(filepath) <= max_bytes:
-        return [filepath]
+            async with session.post(f"https://upload.gofile.io/uploadFile", data=form) as r:
+                result = await r.json()
 
-    duration = get_duration(filepath)
-    if duration <= 0:
-        return [filepath]
-
-    file_size = os.path.getsize(filepath)
-    # Считаем длительность части с запасом 80%
-    ratio = (max_bytes / file_size) * 0.80
-    part_duration = duration * ratio
-
-    parts = []
-    base = os.path.splitext(filepath)[0]
-    current = 0.0
-    part_num = 1
-
-    while current < duration - 1:
-        part_path = f"{base}_part{part_num}.mp4"
-
-        subprocess.run([
-            "ffmpeg", "-ss", str(current),
-            "-i", filepath,
-            "-t", str(part_duration),
-            "-c:v", "libx264", "-c:a", "aac",
-            "-avoid_negative_ts", "1",
-            "-movflags", "+faststart",
-            "-y", part_path
-        ], capture_output=True)
-
-        if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
-            actual_size = os.path.getsize(part_path)
-            # Если часть всё равно большая — уменьшаем следующие
-            if actual_size > max_bytes:
-                part_duration *= 0.75
-                cleanup_file(part_path)
-                continue
-            parts.append(part_path)
-
-        current += part_duration
-        part_num += 1
-
-        if part_num > 99:
-            break
-
-    return parts if parts else [filepath]
+        if result["status"] == "ok":
+            return result["data"]["downloadPage"]
+        else:
+            raise Exception(f"Gofile error: {result}")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Карман меня заказал.\n\n"
-        "📎 Отправь ссылку на видео — скачаю и пришлю.\n"
-        "Большие видео автоматически разбиваются на части."
+        "📎 Отправь ссылку на видео — скачаю и пришлю ссылку для скачивания.\n"
+        "⚡ Без лимитов на размер!"
     )
 
 
@@ -245,17 +204,28 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ydl_opts["extractor_args"] = {"tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"}}
 
     filename = None
-    part_files = []
 
     try:
         loop = asyncio.get_event_loop()
 
         def do_download():
+            import subprocess as sp
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 dl_info = ydl.extract_info(url, download=True)
                 fname = ydl.prepare_filename(dl_info)
                 base = os.path.splitext(fname)[0]
-                return base + ".mp4" if os.path.exists(base + ".mp4") else fname
+                # Ищем скачанный файл
+                for ext in [".mp4", ".webm", ".mkv", ".avi", ".mov"]:
+                    if os.path.exists(base + ext):
+                        if ext != ".mp4":
+                            # Конвертируем в mp4
+                            out = base + ".mp4"
+                            sp.run(["ffmpeg", "-i", base + ext, "-c:v", "libx264", "-c:a", "aac", "-y", out], capture_output=True)
+                            if os.path.exists(out):
+                                os.remove(base + ext)
+                                return out
+                        return base + ext
+                return fname
 
         filename = await loop.run_in_executor(None, do_download)
 
@@ -267,57 +237,28 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 raise FileNotFoundError("Файл не найден")
 
-        size = os.path.getsize(filename)
-        size_mb = size / (1024 * 1024)
+        size_mb = os.path.getsize(filename) / (1024 * 1024)
+        await msg.edit_text(f"☁️ Загружаю на сервер ({size_mb:.1f} MB)...")
 
-        if size > MAX_SIZE:
-            est = int(size / MAX_SIZE) + 1
-            await msg.edit_text(f"✂️ Видео {size_mb:.0f} MB — режу на ~{est} части...")
-            part_files = await loop.run_in_executor(None, split_video, filename, MAX_SIZE)
-        else:
-            part_files = [filename]
+        # Загружаем на gofile.io
+        download_url = await upload_to_gofile(filename)
 
-        total = len(part_files)
-        await msg.edit_text(f"📤 Отправляю {'1 файл' if total == 1 else f'{total} частей'}...")
+        await msg.edit_text(
+            f"✅ Готово!\n\n"
+            f"🎬 {title[:150]}\n"
+            f"📺 {quality}p  |  📦 {size_mb:.1f} MB\n\n"
+            f"🔗 {download_url}\n\n"
+            f"⏳ Ссылка активна 10 дней"
+        )
 
-        for i, part in enumerate(part_files, 1):
-            if not os.path.exists(part):
-                continue
-
-            part_mb = os.path.getsize(part) / (1024 * 1024)
-
-            if total == 1:
-                cap = f"🎬 {title[:180]}\n📺 {quality}p  |  📦 {part_mb:.1f} MB"
-            else:
-                cap = f"🎬 {title[:140]}\n📺 {quality}p  |  📦 Часть {i}/{total}  ({part_mb:.1f} MB)"
-
-            with open(part, "rb") as f:
-                await query.message.reply_video(
-                    video=f,
-                    caption=cap,
-                    supports_streaming=True,
-                    read_timeout=300,
-                    write_timeout=300,
-                    connect_timeout=60,
-                )
-
-        await msg.delete()
         if user_id in pending:
             del pending[user_id]
 
     except Exception as e:
         err = str(e)
-        if "413" in err or "Request Entity Too Large" in err:
-            await msg.edit_text("❌ Часть всё равно большая. Попробуй 480p или 360p.")
-        elif "Timed out" in err:
-            await msg.edit_text("❌ Таймаут. Попробуй ещё раз.")
-        else:
-            await msg.edit_text(f"❌ Ошибка:\n{err[:300]}")
+        await msg.edit_text(f"❌ Ошибка:\n{err[:300]}")
     finally:
         cleanup_file(filename)
-        for p in part_files:
-            if p != filename:
-                cleanup_file(p)
 
 
 def main():
