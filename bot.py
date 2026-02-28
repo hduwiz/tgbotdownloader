@@ -14,10 +14,9 @@ from aiogram.client.default import DefaultBotProperties
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =============================================
 BOT_TOKEN = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
 LOCAL_API = os.environ.get("LOCAL_API_URL", "http://telegram-bot-api:8081")
-# =============================================
+
 
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -79,27 +78,20 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
     if callback.from_user.id != uid:
         return
 
-    # Если бот уже что-то качает, просто уведомляем пользователя
     if download_lock.locked():
         await callback.answer("⏳ Бот занят другим видео. Пожалуйста, подождите своей очереди...", show_alert=True)
 
-    # Очередь
     async with download_lock:
-        # ПРОВЕРКА: Безопасно достаем данные. Если их нет — uid_data будет None
         uid_data = pending.get(uid)
         
         if not uid_data:
-            # Если данных нет, значит запрос уже в работе или кнопка нажата дважды
-            # Пытаемся ответить, чтобы кнопка "отвисла", но не спамим ошибку в консоль
             try:
                 await callback.answer()
-                # Можно отредактировать сообщение, чтобы пользователь не путался
                 await callback.message.edit_text("✅ Это видео уже обрабатывается или ссылка устарела.")
             except:
                 pass
             return
-
-        # Если данные есть, только тогда удаляем их из словаря
+            
         data = pending.pop(uid)
         
         status_msg = await callback.message.edit_text(f"🚀 Начинаю загрузку ({qual}p)...")
@@ -113,18 +105,17 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
                 "merge_output_format": "mp4"
             }
             
-            # Скачивание
+
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: yt_dlp.YoutubeDL(ydl_opts).download([data['url']])
             )
-            
-            # Нарезка
+
             await status_msg.edit_text("✂️ Нарезаю видео по 30 секунд...")
             parts = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: split_video_by_time(raw_path, 30)
             )
+
             
-            # Отправка
             for i, part in enumerate(parts):
                 size_mb = os.path.getsize(part) / (1024 * 1024)
                 caption = f"🎬 <b>{data['title'][:100]}</b>\n📦 Часть {i+1}/{len(parts)} | {qual}p | {size_mb:.1f} MB"
@@ -149,8 +140,8 @@ async def main():
     for f in glob.glob(f"{DOWNLOAD_DIR}/*"): cleanup(f)
     session = AiohttpSession(timeout=3600)
     bot = Bot(token=BOT_TOKEN, session=session, base_url=f"{LOCAL_API}/", default=DefaultBotProperties(parse_mode="HTML"))
+
     
-    # Сброс вебхуков для предотвращения Conflict
     await bot.delete_webhook(drop_pending_updates=True)
     
     logger.info("🤖 Бот запущен")
