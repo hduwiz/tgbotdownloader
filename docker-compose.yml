@@ -2,7 +2,6 @@ version: "3.9"
 
 services:
 
-  # Локальный Telegram Bot API сервер — снимает лимит 50MB
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
     environment:
@@ -12,8 +11,6 @@ services:
     volumes:
       - telegram-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped
-
-  # Наш бот
   bot:
     build: .
     environment:
