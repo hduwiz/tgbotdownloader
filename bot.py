@@ -18,7 +18,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =============================================
-# Настройки (Берем только TOKEN)
 BOT_TOKEN = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -29,13 +28,11 @@ active_tasks = {} # Флаги отмены {user_id: bool}
 # =============================================
 
 def cleanup(path: str):
-    """Удаление файла"""
     if path and os.path.exists(path):
         try: os.remove(path)
         except: pass
 
 def get_ydl_opts():
-    """Настройки yt-dlp"""
     return {
         "quiet": True, 
         "no_warnings": True, 
@@ -47,7 +44,6 @@ def get_ydl_opts():
     }
 
 def split_video_by_time(input_file: str, segment_seconds: int) -> list[str]:
-    """Нарезка видео без перекодирования (сохраняет 16:9)"""
     if not os.path.exists(input_file): return []
     base_name = os.path.splitext(input_file)[0]
     output_pattern = f"{base_name}_part%03d.mp4"
@@ -62,7 +58,6 @@ def split_video_by_time(input_file: str, segment_seconds: int) -> list[str]:
     except: return [input_file]
 
 def get_settings_keyboard(uid: int):
-    """Меню настроек"""
     data = pending.get(uid)
     q, d = data.get("qual", 720), data.get("dur", 30)
     kb = InlineKeyboardBuilder()
@@ -74,7 +69,6 @@ def get_settings_keyboard(uid: int):
     kb.adjust(2, 2, 1)
     return kb.as_markup()
 
-# Reply-кнопка СТОП под вводом текста
 stop_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🛑 ОСТАНОВИТЬ")]],
     resize_keyboard=True
@@ -84,26 +78,27 @@ dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer(🚀 Бот готов , жду видео.", reply_markup=ReplyKeyboardRemove())
+    # ТУТ БЫЛА ОШИБКА, ТЕПЕРЬ ВСЕ В КАВЫЧКАХ
+    await message.answer("🚀 Бот готов, жду ссылку на видео.", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(F.text == "🛑 ОСТАНОВИТЬ")
 async def handle_stop_text(message: Message):
     uid = message.from_user.id
     if uid in active_tasks:
         active_tasks[uid] = False
-        await message.answer("🛑 Прерываю процесс...", reply_markup=ReplyKeyboardRemove())
+        await message.answer("🛑 Останавливаю...", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(F.text.startswith("http"))
 async def handle_url(message: Message):
     url = message.text.strip()
-    msg = await message.answer("🔍 Анализирую...")
+    msg = await message.answer("🔍 Анализ...")
     try:
         opts = {**get_ydl_opts(), "skip_download": True}
         info = await asyncio.get_event_loop().run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
         uid = message.from_user.id
         pending[uid] = {"url": url, "title": info.get("title", "video"), "qual": 720, "dur": 30}
         await msg.edit_text(f"🎬 <b>{info.get('title')[:100]}</b>", reply_markup=get_settings_keyboard(uid))
-    except Exception: await msg.edit_text("❌ Ошибка анализа ссылки.")
+    except Exception: await msg.edit_text("❌ Ошибка ссылки.")
 
 @dp.callback_query(F.data.startswith("set_"))
 async def handle_settings(callback: CallbackQuery):
@@ -121,7 +116,7 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
     if uid not in pending: return
     
     if download_lock.locked():
-        return await callback.answer("⏳ Бот занят другим видео...", show_alert=True)
+        return await callback.answer("⏳ Очередь занята.", show_alert=True)
 
     async with download_lock:
         if uid not in pending: return
@@ -142,42 +137,24 @@ async def handle_dl(callback: CallbackQuery, bot: Bot):
             
             for i, part in enumerate(parts):
                 if not active_tasks.get(uid): raise InterruptedError()
-                
-                # Явно задаем размеры, чтобы избежать 1:1
                 w, h = (1280, 720) if qual == 720 else (854, 480)
-                
-                await bot.send_video(
-                    chat_id=uid, 
-                    video=FSInputFile(part), 
-                    caption=f"📦 Часть {i+1}/{len(parts)}", 
-                    width=w, height=h,
-                    supports_streaming=True
-                )
+                await bot.send_video(uid, video=FSInputFile(part), caption=f"📦 {i+1}/{len(parts)}", width=w, height=h, supports_streaming=True)
                 cleanup(part)
-                await asyncio.sleep(2) # Увеличенная пауза для официального API
+                await asyncio.sleep(2)
 
         except InterruptedError:
             for f in glob.glob(f"{DOWNLOAD_DIR}/{uid}_*"): cleanup(f)
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            await bot.send_message(uid, "❌ Ошибка обработки видео.")
+        except Exception: await bot.send_message(uid, "❌ Ошибка обработки.")
         finally:
             active_tasks.pop(uid, None)
             cleanup(raw_path)
             await bot.send_message(uid, "✅ Готово.", reply_markup=ReplyKeyboardRemove())
 
 async def main():
-    # Очистка папки при старте
     for f in glob.glob(f"{DOWNLOAD_DIR}/*"): cleanup(f)
-    
-    # Инициализация бота без прокси и локальных серверов
-    bot = Bot(
-        token=BOT_TOKEN, 
-        default=DefaultBotProperties(parse_mode="HTML")
-    )
-    
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("🤖 Бот запущен через официальный сервер Telegram!")
+    logger.info("🤖 Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
