@@ -9,7 +9,7 @@ from aiogram.types import (
     Message, CallbackQuery, FSInputFile, 
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart,Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
