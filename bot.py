@@ -13,6 +13,22 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
+
+
+SOURCES_TEXT = """📋 <b>Поддерживаемые сайты:</b>
+
+🟢 https://www.xnxx.com
+🟢 https://www.xvideos.com
+🟢 https://ua.xhamster.com
+🟢 https://rusoska.com
+🟡 https://porno666.link/cat/ — <i>долго качает 2-5 мин</i>
+🟢 https://rt.pornhub.com — <b>обязательно rt.</b>
+🟢 https://www.eporner.com
+🟢 https://tiktok.com
+🟢 https://www.youtube.com"""
+
+
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -79,7 +95,12 @@ dp = Dispatcher()
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     # ТУТ БЫЛА ОШИБКА, ТЕПЕРЬ ВСЕ В КАВЫЧКАХ
-    await message.answer("🚀 Бот готов, жду ссылку на видео.", reply_markup=ReplyKeyboardRemove())
+    await message.answer("🚀 Бот готов, жду ссылку на видео.\n\nСписок поддерживаемых сайтов: /sources", reply_markup=ReplyKeyboardRemove())
+
+@dp.message(Command("sources"))
+async def cmd_sources(message: Message):
+    await message.answer(SOURCES_TEXT)
+
 
 @dp.message(F.text == "🛑 ОСТАНОВИТЬ")
 async def handle_stop_text(message: Message):
