@@ -25,7 +25,9 @@ SOURCES_TEXT = """📋 <b>Поддерживаемые сайты:</b>
 🟢 https://rt.pornhub.com — <b>обязательно rt.</b>
 🟢 https://www.eporner.com
 🟢 https://tiktok.com
-🟢 https://www.youtube.com"""
+🟢 https://www.youtube.com
+
+СПИСОК БУДЕТ ОБНОВЛЯТЬСЯ ПИСАТЬ К @excheater"""
 
 
 
