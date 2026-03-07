@@ -9,7 +9,7 @@ from aiogram.types import (
     Message, CallbackQuery, FSInputFile, 
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
-from aiogram.filters import CommandStart,Command
+from aiogram.filters import CommandStart, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
@@ -30,20 +30,18 @@ SOURCES_TEXT = """📋 <b>Поддерживаемые сайты:</b>
 СПИСОК БУДЕТ ОБНОВЛЯТЬСЯ ПИСАТЬ К @excheater"""
 
 
-
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =============================================
 BOT_TOKEN = os.environ.get("8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE", "8715702797:AAGQFyhgNGlzbFsH1SgDIqJ2tF6rbj9CwXE")
 DOWNLOAD_DIR = "./downloads"
+ADMIN_ID = 7739858103
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 download_lock = asyncio.Lock()
 pending = {}
-active_tasks = {} # Флаги отмены {user_id: bool}
-# =============================================
+active_tasks = {}
+all_users = set()
 
 def cleanup(path: str):
     if path and os.path.exists(path):
@@ -96,13 +94,34 @@ dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    # ТУТ БЫЛА ОШИБКА, ТЕПЕРЬ ВСЕ В КАВЫЧКАХ
+    all_users.add(message.from_user.id)
     await message.answer("🚀 Бот готов, жду ссылку на видео.\n\nСписок поддерживаемых сайтов: /sources", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(Command("sources"))
 async def cmd_sources(message: Message):
     await message.answer(SOURCES_TEXT)
 
+@dp.message(F.text.startswith("/broadcast "))
+async def cmd_broadcast(message: Message, bot: Bot):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    text = message.text[len("/broadcast "):]
+    if not text.strip():
+        await message.answer("❌ Пустое сообщение.")
+        return
+    if not all_users:
+        await message.answer("❌ Нет пользователей.")
+        return
+    ok, fail = 0, 0
+    for uid in list(all_users):
+        try:
+            await bot.send_message(uid, text)
+            ok += 1
+        except:
+            fail += 1
+        await asyncio.sleep(0.05)
+    await message.answer("Отправлено: " + str(ok) + "\nНе доставлено: " + str(fail))
 
 @dp.message(F.text == "🛑 ОСТАНОВИТЬ")
 async def handle_stop_text(message: Message):
@@ -113,6 +132,7 @@ async def handle_stop_text(message: Message):
 
 @dp.message(F.text.startswith("http"))
 async def handle_url(message: Message):
+    all_users.add(message.from_user.id)
     url = message.text.strip()
     msg = await message.answer("🔍 Анализ...")
     try:
